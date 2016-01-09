@@ -3,6 +3,28 @@ require 'relax'
 
 require 'remit/common'
 
+def camelize(lower_case_and_underscored_word, first_letter_in_uppercase = true)
+  if first_letter_in_uppercase
+    lower_case_and_underscored_word.to_s.gsub(/\/(.?)/) { "::" + $1.upcase }.gsub(/(^|_)(.)/) { $2.upcase }
+  else
+    lower_case_and_underscored_word.first + camelize(lower_case_and_underscored_word)[1..-1]
+  end
+end
+
+module Relax
+  class Response
+    class << self
+      alias_method :alias_for_parameter, :parameter
+      def parameter(name, options = {})
+        opts = {
+          :element => camelize(name)
+        }.merge!(options)
+        alias_for_parameter(name, opts)
+      end
+    end
+  end
+end
+
 module Remit
   class Amount < BaseResponse
     parameter :currency_code
@@ -27,6 +49,12 @@ module Remit
   class Error < BaseResponse
     parameter :code
     parameter :message
+    def error_code
+      self.code
+    end
+    def reason_text
+      self.message
+    end
   end
 
   class InstrumentStatus
@@ -69,7 +97,7 @@ module Remit
     parameter :caller_reference
     parameter :token_type
     parameter :old_token_id
-    #parameter :payment_reason
+    parameter :payment_reason
 
     class TokenStatus
       ACTIVE = 'Active'
@@ -84,16 +112,6 @@ module Remit
     parameter :last_reset_count
     parameter :last_reset_time_stamp
   end
-
-
-  class ResponseMetadata < BaseResponse
-    parameter :request_id
-  end
-
-  class TransactionStatusResponse < BaseResponse
-    parameter :transaction_id
-    parameter :transaction_status
-  end
   
   class TransactionPart < Remit::BaseResponse
     parameter :account_id
@@ -107,7 +125,6 @@ module Remit
   class Transaction < BaseResponse
     
     parameter :caller_name
-    parameter :caller_token_id
     parameter :caller_reference
     parameter :caller_description
     parameter :caller_transaction_date, :type => :time
@@ -115,7 +132,7 @@ module Remit
     parameter :date_received, :type => :time
     parameter :error_code
     parameter :error_message
-    parameter :fees, :type => Amount
+    parameter :fees, :element=>"FPSFees", :type => Amount
     parameter :fps_fees_paid_by, :element=>"FPSFeesPaidBy"
     parameter :fps_operation, :element=>"FPSOperation"
     parameter :meta_data
@@ -135,35 +152,25 @@ module Remit
     parameter :transaction_id
     parameter :transaction_parts, :collection => TransactionPart, :element=>"TransactionPart"
   end
-  
-  
-  
-  
+
   class TransactionResponse < BaseResponse
     parameter :transaction_id
     parameter :transaction_status
-    parameter :status
-    parameter :new_sender_token_usage, :type => TokenUsageLimit
 
-    def which_status
-      self.status.blank? ? self.transaction_status : self.status
-    end
-    
-    %w(reserved success failure initiated reinitiated temporary_decline pending).each do |status_name|
+    %w(cancelled failure pending reserved success).each do |status_name|
       define_method("#{status_name}?") do
-        self.which_status == Remit::TransactionStatus.const_get(status_name.sub('_', '').upcase)
+        self.transaction_status == Remit::TransactionStatus.const_get(status_name.sub('_', '').upcase)
       end
     end
   end
 
   class TransactionStatus
+    #For IPN operations these strings are upcased.  For Non-IPN operations they are not upcased
+    CANCELLED         = 'Cancelled'
+    FAILURE           = 'Failure'
+    PENDING           = 'Pending'
     RESERVED          = 'Reserved'
     SUCCESS           = 'Success'
-    FAILURE           = 'Failure'
-    INITIATED         = 'Initiated'
-    REINITIATED       = 'Reinitiated'
-    TEMPORARYDECLINE  = 'TemporaryDecline'
-    PENDING           = 'Pending'
   end
 
   class TokenType
@@ -186,6 +193,7 @@ module Remit
   class PipelineStatusCode
     CALLER_EXCEPTION  = 'CE'  # problem with your code
     SYSTEM_ERROR      = 'SE'  # system error, try again
+    SUCCESS_UNCHANGED = 'SU'  # edit token pipeline finished, but token is unchanged
     SUCCESS_ABT       = 'SA'  # successful payment with Amazon balance
     SUCCESS_ACH       = 'SB'  # successful payment with bank transfer
     SUCCESS_CC        = 'SC'  # successful payment with credit card
@@ -201,7 +209,7 @@ module Remit
       parameter :value
       parameter :currency_code
     end
-
+    
     class TemporaryDeclinePolicy < Remit::Request
       parameter :temporary_decline_policy_type
       parameter :implicit_retry_timeout_in_mins
@@ -211,8 +219,40 @@ module Remit
       parameter :soft_descriptor_type
       parameter :CS_owner
     end
+
+  end
+  
+  class SoftDescriptorType
+    STATIC = 'Static'
+    DYNAMIC = 'Dynamic'
   end
 
+  #MarketplaceRefundPolicy is available in these APIs:
+  # Amazon FPS Advanced Quick Start
+  # Amazon FPS Marketplace Quick Start
+  # Amazon FPS Aggregated Payments Quick Start
+  # i.e. Not Basic Quick Start
+  #It really should be listed under Enumerated DataTypes:
+  #MarketplaceTxnOnly      Caller refunds his fee to the recipient.             String
+  #MasterAndMarketplaceTxn Caller and Amazon FPS refund their fees to the       String
+  #                        sender, and the recipient refunds his amount
+  #MasterTxnOnly           Caller does not refund his fee. Amazon FPS           String
+  #                        refunds its fee and the recipient refunds his amount
+  #                        plus the caller's fee to the sender.
+  class MarketplaceRefundPolicy
+    POLICY = {
+      :marketplace_txn_only => 'MarketplaceTxnOnly',
+      :master_and_marketplace_txn => 'MasterAndMarketplaceTxn',
+      :master_txn_only => 'MasterTxnOnly' #default if not specified, set by Amazon FPS
+    }
+  end
+
+  class TemporaryDeclinePolicyType
+    EXPLICIT_RETRY = 'ExplicitRetry'
+    IMPLICIT_RETRY = 'ImplicitRetry'
+    FAILURE = 'Failure'
+  end
+    
   class Operation
     PAY             = "Pay"
     REFUND          = "Refund"
@@ -221,4 +261,5 @@ module Remit
     WRITE_OFF_DEBT  = "WriteOffDebt"
     FUND_PREPAID    = "FundPrepaid"
   end
+  
 end

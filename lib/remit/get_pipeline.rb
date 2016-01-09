@@ -5,6 +5,7 @@ require 'remit/common'
 module Remit
   module GetPipeline
     class Pipeline
+
       @parameters = []
       attr_reader :parameters
       
@@ -36,6 +37,7 @@ module Remit
       end
       
       attr_reader :api
+      attr_reader :pipeline_url
       
       parameter :caller_key
       parameter :cobranding_style
@@ -48,8 +50,9 @@ module Remit
       parameter :version
       parameter :website_description
 
-      def initialize(api, options)
+      def initialize(api, pipeline, options)
         @api = api
+        @pipeline_url = pipeline
         
         options.each do |k,v|
           self.send("#{k}=", v)
@@ -57,24 +60,25 @@ module Remit
       end
 
       def url
-        uri = URI.parse(@api.pipeline_url)
-        
+        uri = URI.parse(self.pipeline_url)
+
         query = {}
         self.class.parameters.each do |p|
           val = self.send(p)
-          
+
           # Convert Time values to seconds from Epoch
           val = val.to_i if val.is_a?(Time)
-          
-          query[self.class.convert_key(p.to_s)] = val
+
+          query[self.class.convert_key(p)] = val
         end
 
         # Remove any unused optional parameters
-        query.reject! { |key, value| value.nil? || (value.is_a?(String) && value.empty?) }
+        query.reject! { |key, value| value.nil? }
 
-        uri.query = SignedQuery.new(@api.pipeline_url, @api.secret_key, query).to_s
+        uri.query = SignedQuery.new(self.pipeline_url, self.api.secret_key, query).to_s
         uri.to_s
       end
+      
     end
     
     module ValidityPeriod
@@ -105,6 +109,11 @@ module Remit
       parameter :max_variable_fee
       parameter :payment_method
       parameter :recipient_pays_fee
+      # BJM: missing??
+      # PHB: Amazon only documents this parameter as being part of responses, never as part of a request.
+      #       Not sure if it is a documentation oversight.
+      #       I am sure the documentation is terrible (with four fingers pointed back at me).
+      parameter :payment_reason
 
       include ValidityPeriod
 
@@ -143,6 +152,7 @@ module Remit
       parameter :shipping
       parameter :tax
       parameter :transaction_amount
+      parameter :collect_email_address
 
       def pipeline_name
         Remit::PipelineName::SINGLE_USE
@@ -231,32 +241,42 @@ module Remit
       end
     end
 
+    class EditTokenPipeline < Pipeline
+      parameter :caller_reference
+      parameter :token_id
+      parameter :payment_method
+      
+      def pipeline_name
+        Remit::PipelineName::EDIT_TOKEN
+      end
+    end
+
     def get_single_use_pipeline(options)
-      self.get_pipeline(SingleUsePipeline, options)
+      get_pipeline(Remit::GetPipeline::SingleUsePipeline, options)
     end
-
     def get_multi_use_pipeline(options)
-      self.get_pipeline(MultiUsePipeline, options)
+      get_pipeline(Remit::GetPipeline::MultiUsePipeline, options)
     end
-
     def get_recipient_pipeline(options)
-      self.get_pipeline(RecipientPipeline, options)
+      get_pipeline(Remit::GetPipeline::RecipientPipeline, options)
     end
-    
     def get_recurring_use_pipeline(options)
-      self.get_pipeline(RecurringUsePipeline, options)
+      get_pipeline(Remit::GetPipeline::RecurringUsePipeline, options)
     end
-    
     def get_postpaid_pipeline(options)
-      self.get_pipeline(PostpaidPipeline, options)
+      get_pipeline(Remit::GetPipeline::PostpaidPipeline, options)
     end
-    
     def get_prepaid_pipeline(options)
-      self.get_pipeline(PrepaidPipeline, options)
+      get_pipeline(Remit::GetPipeline::PrepaidPipeline, options)
+    end
+    def get_edit_token_pipeline(options)
+      get_pipeline(Remit::GetPipeline::EditTokenPipeline, options)
     end
 
     def get_pipeline(pipeline_subclass, options)
-      pipeline = pipeline_subclass.new(self, {
+      # TODO: How does @pipeline_url work here?
+      #       instance variable is setup in initializer of class.
+      pipeline_subclass.new(self, @pipeline_url, {
         :caller_key => @access_key,
         :signature_version=>Remit::API::SIGNATURE_VERSION,
         :signature_method=>Remit::API::SIGNATURE_METHOD,
